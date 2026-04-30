@@ -1,16 +1,18 @@
 <?php
-// Configuration (à remplacer par un fichier .env ou des variables d'environnement en production)
-$apiKey = getenv('OPENWEATHERMAP_API_KEY') ?: 'XXXXXXXXXXXX'; // Remplace par ta clé API
-$defaultCity = isset($_GET['city']) ? filter_var($_GET['city'], FILTER_SANITIZE_STRING) : 'Paris';
+// Configuration
+$apiKey = getenv('OPENWEATHERMAP_API_KEY') ?: 'MY_KEY';
+$defaultCity = isset($_GET['city']) ? filter_var($_GET['city'], FILTER_SANITIZE_STRING) : 'Saint-Herblain';
 $defaultCountry = isset($_GET['country']) ? filter_var($_GET['country'], FILTER_SANITIZE_STRING) : 'FR';
+$selectedLat = isset($_GET['lat']) ? filter_var($_GET['lat'], FILTER_SANITIZE_NUMBER_FLOAT, FILTER_FLAG_ALLOW_FRACTION) : null;
+$selectedLon = isset($_GET['lon']) ? filter_var($_GET['lon'], FILTER_SANITIZE_NUMBER_FLOAT, FILTER_FLAG_ALLOW_FRACTION) : null;
 
 // Liste des villes à afficher dans le tableau
 $citiesList = [
-    ['name' => 'Marseille', 'country' => 'FR'],
-    ['name' => 'Lille', 'country' => 'FR'],
-    ['name' => 'Brest', 'country' => 'FR'],
-    ['name' => 'Strasbourg', 'country' => 'FR'],
-    ['name' => 'Paris', 'country' => 'FR'],
+    ['name' => 'Saint-Herblain', 'country' => 'FR'],
+    ['name' => 'Bordeaux', 'country' => 'FR'],
+    ['name' => 'Pouldreuzic', 'country' => 'FR'],
+    ['name' => 'Saint-Denoeux', 'country' => 'FR'],
+    ['name' => 'Blois', 'country' => 'FR'],
 ];
 
 // Fonction pour récupérer les données de l'API
@@ -26,23 +28,25 @@ function getDataFromApi($url) {
     return $data;
 }
 
+// Fonction pour obtenir les résultats de géocodage (plusieurs résultats possibles)
+function getGeocodingResults($city, $country, $apiKey) {
+    $geocodingUrl = "http://api.openweathermap.org/geo/1.0/direct?q={$city},{$country}&appid={$apiKey}&limit=5";
+    return getDataFromApi($geocodingUrl);
+}
+
 // Fonction pour obtenir la météo actuelle d'une ville
 function getCurrentWeather($city, $country, $state, $apiKey) {
-    $geocodingUrl = $state
-        ? "http://api.openweathermap.org/geo/1.0/direct?q={$city},{$state},{$country}&appid={$apiKey}&limit=1"
-        : "http://api.openweathermap.org/geo/1.0/direct?q={$city},{$country}&appid={$apiKey}&limit=1";
-
-    $geocodingData = getDataFromApi($geocodingUrl);
+    $geocodingData = getGeocodingResults($city, $country, $apiKey);
     if (empty($geocodingData)) {
         return null;
     }
-
     $lat = $geocodingData[0]['lat'];
     $lon = $geocodingData[0]['lon'];
     $oneCallUrl = "https://api.openweathermap.org/data/3.0/onecall?lat={$lat}&lon={$lon}&exclude=minutely,hourly,daily,alerts&appid={$apiKey}&units=metric&lang=fr";
     $weatherData = getDataFromApi($oneCallUrl);
     return [
         'city' => $city,
+        'country' => $country,
         'temp' => round($weatherData['current']['temp'], 1),
         'description' => $weatherData['current']['weather'][0]['description'],
         'icon' => $weatherData['current']['weather'][0]['icon'],
@@ -71,19 +75,39 @@ function getForecastForTime($forecastData, $targetTime, $dayOffset = 0) {
     return $closestForecast;
 }
 
-// Récupération des données météo pour la ville sélectionnée
+// Récupération des résultats de géocodage pour la ville recherchée
+$geocodingResults = [];
 $selectedCityWeather = null;
-$geocodingData = null;
-if ($defaultCity) {
+$error = null;
+
+if ($defaultCity && !$selectedLat && !$selectedLon) {
     try {
-        $geocodingUrl = "http://api.openweathermap.org/geo/1.0/direct?q={$defaultCity},{$defaultCountry}&appid={$apiKey}&limit=1";
-        $geocodingData = getDataFromApi($geocodingUrl);
-        if (!empty($geocodingData)) {
-            $lat = $geocodingData[0]['lat'];
-            $lon = $geocodingData[0]['lon'];
-            $oneCallUrl = "https://api.openweathermap.org/data/3.0/onecall?lat={$lat}&lon={$lon}&exclude=minutely&appid={$apiKey}&units=metric&lang=fr";
-            $weatherData = getDataFromApi($oneCallUrl);
-            $selectedCityWeather = $weatherData;
+        $geocodingResults = getGeocodingResults($defaultCity, $defaultCountry, $apiKey);
+        if (count($geocodingResults) === 1) {
+            // Une seule ville trouvée : rediriger vers l'URL avec lat/lon
+            $lat = $geocodingResults[0]['lat'];
+            $lon = $geocodingResults[0]['lon'];
+            header("Location: ?city=" . urlencode($defaultCity) . "&country=" . urlencode($defaultCountry) . "&lat={$lat}&lon={$lon}");
+            exit;
+        }
+    } catch (Exception $e) {
+        $error = $e->getMessage();
+    }
+}
+
+// Si lat/lon sont fournis, récupérer la météo pour ces coordonnées
+if ($selectedLat && $selectedLon) {
+    try {
+        $oneCallUrl = "https://api.openweathermap.org/data/3.0/onecall?lat={$selectedLat}&lon={$selectedLon}&exclude=minutely&appid={$apiKey}&units=metric&lang=fr";
+        $selectedCityWeather = getDataFromApi($oneCallUrl);
+        $selectedCityWeather['lat'] = $selectedLat;
+        $selectedCityWeather['lon'] = $selectedLon;
+        // Récupérer le nom de la ville à partir des coordonnées
+        $reverseGeocodingUrl = "http://api.openweathermap.org/geo/1.0/reverse?lat={$selectedLat}&lon={$selectedLon}&appid={$apiKey}&limit=1";
+        $reverseGeocodingData = getDataFromApi($reverseGeocodingUrl);
+        if (!empty($reverseGeocodingData)) {
+            $defaultCity = $reverseGeocodingData[0]['name'];
+            $defaultCountry = $reverseGeocodingData[0]['country'];
         }
     } catch (Exception $e) {
         $error = $e->getMessage();
@@ -112,6 +136,27 @@ foreach ($citiesList as $cityItem) {
             padding: 20px;
             max-width: 1000px;
             margin: 0 auto;
+        }
+        .city-item-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+        .city-item-name {
+            font-weight: bold;
+            font-size: 1.1em;
+        }
+        .city-item-temp {
+            font-size: 1.3em;
+            font-weight: bold;
+            color: #2c3e50;
+            margin: 5px 0;
+        }
+        .city-item-icon {
+            width: 50px;
+            height: 50px;
+            align-self: flex-end;
         }
         .search-container {
             margin-bottom: 20px;
@@ -196,11 +241,46 @@ foreach ($citiesList as $cityItem) {
                 flex: 1 1 100%;
             }
         }
-
+        .cities-weather-container {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 15px;
+            margin-bottom: 30px;
+        }
+        .homonyms-container {
+            margin: 20px 0;
+            padding: 15px;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            background-color: #f0f8ff;
+        }
+        .homonyms-container h3 {
+            margin-top: 0;
+        }
+        .homonym-list {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+        .homonym-item {
+            padding: 10px;
+            border: 1px solid #eee;
+            border-radius: 4px;
+            background-color: white;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+        .homonym-item:hover {
+            background-color: #e6f7ff;
+        }
+        .homonym-item a {
+            text-decoration: none;
+            color: #333;
+            display: block;
+        }
     </style>
 </head>
 <body>
-
     <h1>Météo en France</h1>
 
     <!-- Barre de recherche -->
@@ -212,78 +292,98 @@ foreach ($citiesList as $cityItem) {
         </form>
     </div>
 
-    <!-- Tableau des villes -->
+    <!-- Affichage des homonymes si plusieurs résultats -->
+    <?php if (!empty($geocodingResults) && count($geocodingResults) > 1 && !$selectedLat): ?>
+        <div class="homonyms-container">
+            <h3>Plusieurs villes correspondent à "<?php echo htmlspecialchars($defaultCity); ?>". Veuillez choisir :</h3>
+            <div class="homonym-list">
+                <?php foreach ($geocodingResults as $result): ?>
+                    <div class="homonym-item">
+                        <a href="?city=<?php echo urlencode($result['name']); ?>&country=<?php echo urlencode($result['country']); ?>&lat=<?php echo $result['lat']; ?>&lon=<?php echo $result['lon']; ?>">
+                            <?php
+                            echo htmlspecialchars($result['name']);
+                            if (isset($result['state'])) {
+                                echo ", " . htmlspecialchars($result['state']);
+                            }
+                            echo ", " . htmlspecialchars($result['country']);
+                            ?>
+                        </a>
+                    </div>
+                <?php endforeach; ?>
+            </div>
+        </div>
+    <?php endif; ?>
+
     <h2>Météo actuelle par ville</h2>
-    <table>
-        <thead>
-            <tr>
-                <th>Ville</th>
-                <th>Température</th>
-                <th>Description</th>
-                <th>Icône</th>
-            </tr>
-        </thead>
-        <tbody>
-            <?php foreach ($citiesWeather as $cityWeather): ?>
-                <tr onclick="window.location.href='?city=<?php echo urlencode($cityWeather['city']); ?>&country=FR'">
-                    <td><?php echo htmlspecialchars($cityWeather['city']); ?></td>
-                    <td><?php echo $cityWeather['temp']; ?>°C</td>
-                    <td><?php echo htmlspecialchars($cityWeather['description']); ?></td>
-                    <td><img src="<?php echo getWeatherIconUrl($cityWeather['icon']); ?>" alt="<?php echo htmlspecialchars($cityWeather['description']); ?>"></td>
-                </tr>
-            <?php endforeach; ?>
-        </tbody>
-    </table>
+    <div class="cities-weather-container">
+        <?php foreach ($citiesWeather as $cityWeather): ?>
+            <div class="city-item" onclick="window.location.href='?city=<?php echo urlencode($cityWeather['city']); ?>&country=<?php echo urlencode($cityWeather['country']); ?>&lat=<?php echo $cityWeather['lat']; ?>&lon=<?php echo $cityWeather['lon']; ?>'">
+                <div class="city-item-header">
+                    <div class="city-item-name"><?php echo htmlspecialchars($cityWeather['city']); ?></div>
+                    <img class="city-item-icon" src="<?php echo getWeatherIconUrl($cityWeather['icon']); ?>" alt="<?php echo htmlspecialchars($cityWeather['description']); ?>">
+                </div>
+                <div class="city-item-temp"><?php echo $cityWeather['temp']; ?>°C</div>
+                <div><?php echo htmlspecialchars($cityWeather['description']); ?></div>
+            </div>
+        <?php endforeach; ?>
+    </div>
 
     <!-- Affichage détaillé pour la ville sélectionnée -->
     <?php if ($selectedCityWeather): ?>
         <div class="weather-container">
-            <h2>Météo détaillée pour <?php echo htmlspecialchars($defaultCity); ?></h2>
+            <h2><?php echo htmlspecialchars($defaultCity); ?></h2>
 
-            <div class="current-weather">
-                <div class="weather-item">
-                    <h3>Météo actuelle</h3>
-                    <p><?php echo date('H:i'); ?></p>
-                    <img src="<?php echo getWeatherIconUrl($selectedCityWeather['current']['weather'][0]['icon']); ?>" alt="<?php echo htmlspecialchars($selectedCityWeather['current']['weather'][0]['description']); ?>">
-                    <p><?php echo htmlspecialchars($selectedCityWeather['current']['weather'][0]['description']); ?></p>
-                    <p>Température: <?php echo round($selectedCityWeather['current']['temp'], 1); ?>°C</p>
-                    <p>Ressentie: <?php echo round($selectedCityWeather['current']['feels_like'], 1); ?>°C</p>
-                </div>
-            </div>
+            <?php
+            if (isset($selectedCityWeather['alerts'])) {
+                foreach ($selectedCityWeather['alerts'] as $alert) {
+                    echo "<div class='alerts-container'>";
+                    echo "<div class='alert-item'>";
+                    echo "<h3>Alerte Météo</h3>";
+                    echo "<p><strong>" . htmlspecialchars($alert['event']) . "</strong></p>";
+                    echo "<p><strong>Du </strong> " . date('d/m/Y H:i', $alert['start']);
+                    echo "<strong> au </strong> " . date('d/m/Y H:i', $alert['end']) . "</p>";
+                    echo "<p>".htmlspecialchars($alert['description'])."</p>";
+                    echo "</div>";
+                    echo "</div>";
+                }
+            }
+            ?>
 
-            <h2>Les prochaines heures</h2>
-            <div class="forecast-container">
+            <div class="cities-weather-container">
                 <?php
                 $now = time();
                 foreach ($selectedCityWeather['hourly'] as $hourlyForecast) {
                     $forecastTime = $hourlyForecast['dt'];
-                    if ($forecastTime > $now +3600 && $forecastTime <= $now + 6 * 3600) {
+                    if ($forecastTime > ($now+3600) && $forecastTime <= $now+6*3600) {
                         $date = new DateTime("@{$forecastTime}");
                         $iconUrl = getWeatherIconUrl($hourlyForecast['weather'][0]['icon']);
-                        echo "<div class='weather-item'>";
-                        echo "<h3>{$date->format('H:i')}</h3>";
-                        echo "<img src='{$iconUrl}' alt='" . htmlspecialchars($hourlyForecast['weather'][0]['description']) . "'>";
-                        echo "<p>" . htmlspecialchars($hourlyForecast['weather'][0]['description']) . "</p>";
-                        echo "<p>Température: " . round($hourlyForecast['temp'], 1) . "°C</p>";
+                        echo "<div class='city-item'>";
+                        echo "<div class='city-item-header'>";
+                        echo "<div class='city-item-name'>{$date->format('H:i')}</div>";
+                        echo "<img class='city-item-icon' src='{$iconUrl}' alt='" . htmlspecialchars($hourlyForecast['weather'][0]['description']) . "'>";
+                        echo "</div>";
+                        echo "<div class='city-item-temp'>" . round($hourlyForecast['temp'], 1) . "°C</div>";
                         echo "</div>";
                     }
                 }
                 ?>
             </div>
 
-            <h2>Prévisions pour demain</h2>
             <div class="forecast-container">
                 <?php
-                $timesTomorrow = ['09:00', '12:00', '17:00'];
+                $timesTomorrow = ['08:00', '10:00', '13:00', '17:00', '20:00'];
                 foreach ($timesTomorrow as $time) {
                     $forecast = getForecastForTime($selectedCityWeather, $time, 1);
                     if ($forecast) {
                         $forecastIconUrl = getWeatherIconUrl($forecast['weather'][0]['icon']);
-                        echo "<div class='weather-item'>";
-                        echo "<h3>Demain<br>{$time}</h3>";
-                        echo "<img src='{$forecastIconUrl}' alt='" . htmlspecialchars($forecast['weather'][0]['description']) . "'>";
-                        echo "<p>" . htmlspecialchars($forecast['weather'][0]['description']) . "</p>";
-                        echo "<p>Température: " . round($forecast['temp'], 1) . "°C</p>";
+                        echo "<div class='city-item'>";
+                        echo "<div class='city-item-header'>";
+                        echo "<div class='city-item-name'>Demain<br>{$time}</div>";
+                        echo "<img class='city-item-icon'src='{$forecastIconUrl}' alt='" . htmlspecialchars($forecast['weather'][0]['description']) . "'>";
+                        echo "</div>";
+                        echo "<div class='city-item-temp'>";
+                        echo round($forecast['temp'], 1) . "°C";
+                        echo "</div>";
                         echo "</div>";
                     } else {
                         echo "<div class='weather-item'>";
@@ -291,25 +391,6 @@ foreach ($citiesList as $cityItem) {
                         echo "<p>Prévision non disponible</p>";
                         echo "</div>";
                     }
-                }
-                ?>
-            </div>
-
-            <h2>Alerte météo</h2>
-            <div class="alerts-container">
-                <?php
-                if (isset($selectedCityWeather['alerts'])) {
-                    foreach ($selectedCityWeather['alerts'] as $alert) {
-                        echo "<div class='alert-item'>";
-                        echo "<h3>Alerte Météo</h3>";
-                        echo "<p><strong>Événement:</strong> " . htmlspecialchars($alert['event']) . "</p>";
-                        echo "<p><strong>Début:</strong> " . date('Y-m-d H:i', $alert['start']) . "</p>";
-                        echo "<p><strong>Fin:</strong> " . date('Y-m-d H:i', $alert['end']) . "</p>";
-                        echo "<p><strong>Description:</strong> " . htmlspecialchars($alert['description']) . "</p>";
-                        echo "</div>";
-                    }
-                } else {
-                    echo "<div class='alert-item'><p>Aucune alerte météo en cours.</p></div>";
                 }
                 ?>
             </div>
@@ -322,7 +403,7 @@ foreach ($citiesList as $cityItem) {
                           "&layer=mapnik&marker=" . urlencode($lat) . "," . urlencode($lon);
                 echo '<iframe frameborder="0" scrolling="no" marginheight="0" marginwidth="0" src="' . $mapUrl . '"></iframe>';
             }
-            displayMap($geocodingData[0]['lat'], $geocodingData[0]['lon']);
+            displayMap($selectedLat, $selectedLon);
             ?>
         </div>
     <?php elseif (isset($error)): ?>
